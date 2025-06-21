@@ -1,4 +1,4 @@
-# MLib-PySpark-SoundLevel-Prediction
+# MLib PySpark SoundLevel Prediction
 Creates an ML Pipeline leveraging PySpark SQL and PySpark MLib to predict airfoils noise levels. 
 
 This repository contains Data Engineering and ML material completed to obtain the [Data Engineering Professional Certificate](https://www.credly.com/badges/e0a1b78c-db53-484c-8363-2da95ba0582a/public_url) and the

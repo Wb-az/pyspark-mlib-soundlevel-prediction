@@ -1,107 +1,101 @@
-# Suppress warnings
-from random import random
-
-
-def warn(*args, **kwargs):
-    pass
 import warnings
-warnings.warn = warn
-warnings.filterwarnings('ignore')
+warnings.simplefilter('ignore', category=FutureWarning)
 import pandas as pd
+from datetime import datetime
+from pathlib import Path
 
 # FindSpark simplifies the process of using Apache Spark with Python
 import findspark
 findspark.init()
 
-from pyspark.conf import SparkConf
-from pyspark.context import SparkContext
-from pyspark.sql import SparkSession
 
-from pyspark.ml.feature import MinMaxScaler
 from pyspark.ml.regression import LinearRegression, FMRegressor, RandomForestRegressor, GBTRegressor
-from spark_utils import *
+from spark_utils import  train, load_model, multimetric_evaluator, build_spark
 
 
-def run(label=None, pred_col=None, metrics_list=None, models_list=None, stages=None, train_data=None,
-         val_data=None, test_data=None, path_to_save=None):
+def run(models_list=None, train_data=None,
+         val_data=None, test_data=None, path_to_save=None, metrics=None):
 
-    evaluators_dict = evaluators(label=label, pred_col=pred_col, metrics_list=metrics_list)
 
-    performance = {}
-    test_performance = {}
-    for model in models_list:
-        metrics, weights_path, model_name = train(train_data, val_data, stages, model=model,
-                                                  evaluators=evaluators_dict, path=path_to_save)
-        performance.update(metrics)
-        stages.pop()
+    train_res = {}
+    test_res = {}
+    for m in models_list:
+        res, weights_path, model_name = train(train_data, val_data, model=m,
+                                                  path=path_to_save, metrics_list=metrics)
         print('.......Testing.......')
-        best_model = load_model(cross_validated=False, path=weights_path)
-        test_prediction = best_model.transform(test_data)
-        test_results = evaluation(evaluators_dict, test_prediction)
-        test_performance[model_name] = test_results
+        model = load_model(cross_validated=False, path=weights_path)
+        test_preds = model.transform(test_data)
+        t_res = multimetric_evaluator(test_preds, metrics_list)
+        test_res[m] = t_res
+        train_res[m] = res
 
-    performance_df = pd.DataFrame(performance).reset_index(drop=False)
-    test_performance_df = pd.DataFrame(test_performance).reset_index(drop=False)
+    train_performance_df = pd.DataFrame(train_res).reset_index()
+    test_performance_df = pd.DataFrame(test_res).reset_index()
 
-    return performance_df, test_performance_df
+    return train_performance_df, test_performance_df
 
 
 if __name__ == '__main__':
 
-     # Create Spark Context and SparkSession
 
-     conf = SparkConf()
-     conf.set("spark.executor.memory", "2g")
-     sc = SparkContext(conf=conf)
-     spark = SparkSession.builder.appName('Final Project').getOrCreate()
-     sc.setLogLevel("error")
+    spark = build_spark()
 
-     data_path = 'bigdata/NASA_airfoil_noise_cleaned.parquet 12-17-47-019.parquet'
-     df = spark.read.parquet(data_path)
-     assembler = vect_assembler(df.columns[0:-1],'features')
-     scaler = MinMaxScaler(inputCol='features', outputCol='scaledFeatures')
-     lr = LinearRegression(featuresCol="scaledFeatures", labelCol="SoundLevelDecibels", regParam=0.2,
-                           elasticNetParam=0.8)
-     factRegressor = FMRegressor(featuresCol="scaledFeatures", labelCol="SoundLevelDecibels", stepSize=0.3)
-     randomForest = RandomForestRegressor(featuresCol="scaledFeatures", labelCol="SoundLevelDecibels", maxDepth=8)
-     gradientBoost = GBTRegressor(featuresCol="scaledFeatures", labelCol="SoundLevelDecibels", maxDepth=8)
+    base_path = Path(__file__).resolve().parent
 
-     # Split data
-     (trainingData, testingData) = df.randomSplit([0.7, 0.3], seed=42)
-     (testingData, valData) = testingData.randomSplit([0.6, 0.4], seed=42)
+    data_path = base_path /'dataset' /'NASA_airfoil_noise_cleaned.parquet'
 
-     objectives = ['mae', 'mse', 'rmse', 'r2']
+    df = spark.read.parquet(f'{data_path}')
 
-     output_dir = "bigdata"
-     models = [lr, factRegressor, randomForest, gradientBoost]
+    lr = LinearRegression(featuresCol="scaledFeatures",
+                          labelCol="SoundLevelDecibels",
+                          regParam=0.2,
+                          elasticNetParam=0.8)
+    fmr =FMRegressor(featuresCol="scaledFeatures",
+                     labelCol="SoundLevelDecibels",
+                     stepSize=0.25)
+    rfr = RandomForestRegressor(featuresCol="scaledFeatures",
+                                labelCol="SoundLevelDecibels",
+                                maxDepth= 8)
+    gbr = GBTRegressor(featuresCol="scaledFeatures",
+                       labelCol="SoundLevelDecibels",
+                       maxDepth=8)
 
-     train_metrics, test_metrics = run(label='SoundLevelDecibels', pred_col='prediction', metrics_list=objectives,
-          models_list=models, stages=[assembler, scaler], train_data=trainingData, val_data=valData,
-                                        test_data=testingData, path_to_save=output_dir)
+    # Split data
+    (trainingData, testingData) = df.randomSplit([0.7, 0.3], seed=42)
+    (testingData, valData) = testingData.randomSplit([0.6, 0.4], seed=42)
 
+    # Create outtputs directories
+    outputs = ['models', 'metrics']
 
-     spark_metrics = spark.createDataFrame(train_metrics)
-     spark_metrics = spark_metrics.withColumnRenamed("index", "Metric")
-     spark_test_metrics = spark.createDataFrame(test_metrics)
-     spark_test_metrics = spark_test_metrics.withColumnRenamed("index", "Metric")
+    output_dir = {}
+    for o in outputs:
+        output_dir[o] = base_path / 'results' / o
+        output_dir[o].mkdir(exist_ok=True)
 
-     # Save metrics results
-     ts = datetime.timestamp(datetime.now())
-     spark_metrics.write.mode("overwrite").parquet(f"{output_dir}/training_metrics_{ts}.parquet")
-     spark_test_metrics.write.mode("overwrite").parquet(f"{output_dir}/test_metrics_{ts}.parquet")
+    metrics_list = ['mae', 'mse', 'rmse', 'r2']
 
-     print("Training scores")
-     spark_metrics.show()
-     print("Test scores")
-     spark_test_metrics.show()
+    train_metrics, test_metrics = run(models_list=[lr, fmr, rfr, gbr],
+                                      train_data=trainingData,
+                                      val_data=valData,
+                                      test_data=testingData,
+                                      path_to_save=output_dir['models'],
+                                      metrics=metrics_list)
 
-     # Stop context and session
-     sc.stop()
-     spark.stop()
+    spark_metrics = spark.createDataFrame(train_metrics)
+    spark_metrics.show()
+    spark_metrics = spark_metrics.withColumnRenamed("index", "Metric")
+    spark_test_metrics = spark.createDataFrame(test_metrics)
+    park_test_metrics = spark_test_metrics.withColumnRenamed("index", "Metric")
 
+    # Save metrics results
+    ts = datetime.timestamp(datetime.now())
+    spark_metrics.write.mode("overwrite").parquet(f"{output_dir['metrics']}/training_metrics_{ts}.parquet")
+    spark_test_metrics.write.mode("overwrite").parquet(f"{output_dir['metrics']}/test_metrics_{ts}.parquet")
 
+    print("Training scores")
+    spark_metrics.show()
+    print("Test scores")
+    spark_test_metrics.show()
 
-
-
-
-
+    # Stop context and session
+    spark.stop()

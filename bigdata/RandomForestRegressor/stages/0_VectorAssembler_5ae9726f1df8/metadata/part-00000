@@ -1,1 +1,0 @@
-{"class":"org.apache.spark.ml.feature.VectorAssembler","timestamp":1730379865752,"sparkVersion":"3.5.3","uid":"VectorAssembler_5ae9726f1df8","paramMap":{"outputCol":"features","inputCols":["Frequency","AngleOfAttack","ChordLength","FreeStreamVelocity","SuctionSideDisplacement"]},"defaultParamMap":{"outputCol":"VectorAssembler_5ae9726f1df8__output","handleInvalid":"error"}}
